@@ -1,0 +1,46 @@
+# Re-verifies every published release nightly, from main (macula-codex).
+#
+# A delivery branch could carry a workflow of its own that publishes without verifying (a
+# deploy key cannot be kept out of .github/). This audit runs only from main, so it cannot be
+# replaced by a delivery, and it opens an issue for any release whose files do not verify.
+name: audit
+
+on:
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  releases:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - name: Every release verifies
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          bad=""
+          for tag in $(gh release list --limit 1000 --json tagName --jq '.[].tagName'); do
+            out="$(scripts/verify_release.sh "$tag" 2>&1)" || bad="$bad"$'\n'"- $out"
+          done
+          [ -z "$bad" ] && { echo "all releases verify"; exit 0; }
+          title="Release audit: a published file does not verify"
+          if [ -n "$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[].number')" ]; then
+            echo "$bad"; echo "already reported in an open issue"; exit 1
+          fi
+          gh issue create --title "$title" \
+            --body "Purpose (security): a release whose files do not verify against their workflow identity is found and withdrawn.
+          $bad
+
+          Delete the release and its tag, then find how it was published (audit run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+          exit 1
